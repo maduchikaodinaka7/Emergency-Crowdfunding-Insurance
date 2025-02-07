@@ -52,6 +52,6 @@ plan:
         - emulated-contract-publish:
             contract-name: emergency-ci
             emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
-            path: contracts/emergency-ci.clar
+            path: "contracts\\emergency-ci.clar"
             clarity-version: 3
       epoch: "3.1"
