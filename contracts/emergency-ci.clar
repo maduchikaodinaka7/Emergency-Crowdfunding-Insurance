@@ -493,3 +493,99 @@
 ;; Check if an address is an authorized oracle
 (define-read-only (is-authorized-oracle (address principal))
   (default-to false (map-get? authorized-oracles address)))
+
+
+
+(define-constant TIMELOCK-ACTIVE u1)
+(define-constant TIMELOCK-EXPIRED u2)
+
+(define-map timelocked-pools 
+  { pool-id: uint }
+  {
+    name: (string-ascii 50),
+    lock-duration: uint,
+    start-block: uint,
+    total-locked: uint,
+    status: uint
+  }
+)
+
+(define-map pool-deposits
+  { pool-id: uint, depositor: principal }
+  uint
+)
+
+(define-data-var pool-id-counter uint u0)
+
+(define-public (create-timelock-pool (name (string-ascii 50)) (lock-duration uint))
+  (let ((pool-id (var-get pool-id-counter)))
+    (begin
+      (map-set timelocked-pools
+        { pool-id: pool-id }
+        {
+          name: name,
+          lock-duration: lock-duration,
+          start-block: stacks-block-height,
+          total-locked: u0,
+          status: TIMELOCK-ACTIVE
+        }
+      )
+      (var-set pool-id-counter (+ pool-id u1))
+      (ok pool-id))))
+
+(define-public (deposit-to-timelock (pool-id uint) (amount uint))
+  (let ((pool (unwrap! (map-get? timelocked-pools { pool-id: pool-id }) (err u200))))
+    (begin
+      (asserts! (is-eq (get status pool) TIMELOCK-ACTIVE) (err u201))
+      (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+      (map-set pool-deposits 
+        { pool-id: pool-id, depositor: tx-sender }
+        (+ (default-to u0 (map-get? pool-deposits { pool-id: pool-id, depositor: tx-sender })) amount))
+      (map-set timelocked-pools
+        { pool-id: pool-id }
+        (merge pool { total-locked: (+ (get total-locked pool) amount) }))
+      (ok true))))
+
+
+
+(define-constant RISK-LOW u1) 
+(define-constant RISK-MEDIUM u2)
+(define-constant RISK-HIGH u3)
+
+(define-map risk-assessments
+  { claim-id: uint }
+  {
+    risk-score: uint,
+    factors: (list 5 (string-ascii 30)),
+    assessed-by: principal,
+    timestamp: uint
+  }
+)
+
+(define-map risk-assessors principal bool)
+
+(define-public (register-risk-assessor (assessor principal))
+  (begin
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+    (map-set risk-assessors assessor true)
+    (ok true)))
+
+(define-public (assess-claim-risk 
+    (claim-id uint) 
+    (risk-score uint) 
+    (risk-factors (list 5 (string-ascii 30))))
+  (begin
+    (asserts! (default-to false (map-get? risk-assessors tx-sender)) ERR-NOT-AUTHORIZED)
+    (map-set risk-assessments
+      { claim-id: claim-id }
+      {
+        risk-score: risk-score,
+        factors: risk-factors,
+        assessed-by: tx-sender,
+        timestamp: stacks-block-height
+      }
+    )
+    (ok true)))
+
+(define-read-only (get-claim-risk-assessment (claim-id uint))
+  (map-get? risk-assessments { claim-id: claim-id }))
