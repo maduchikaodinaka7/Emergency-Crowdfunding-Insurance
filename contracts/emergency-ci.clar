@@ -589,3 +589,80 @@
 
 (define-read-only (get-claim-risk-assessment (claim-id uint))
   (map-get? risk-assessments { claim-id: claim-id }))
+
+
+
+
+  (define-constant BASE-PREMIUM-RATE u100)
+(define-constant MAX-PREMIUM-MULTIPLIER u300)
+
+(define-map user-claim-history 
+    principal 
+    { total-claims: uint, total-amount: uint, last-claim: uint }
+)
+
+(define-map risk-multipliers
+    principal 
+    uint
+)
+
+(define-public (calculate-premium (coverage-amount uint))
+    (let (
+        (user-history (default-to { total-claims: u0, total-amount: u0, last-claim: u0 } 
+            (map-get? user-claim-history tx-sender)))
+        (risk-score (+ u100 
+            (* (get total-claims user-history) u50)))
+        (final-multiplier (if (> risk-score MAX-PREMIUM-MULTIPLIER)
+            MAX-PREMIUM-MULTIPLIER
+            risk-score))
+    )
+    (begin
+        (map-set risk-multipliers tx-sender final-multiplier)
+        (ok (* coverage-amount (/ final-multiplier u100)))
+    )))
+
+(define-read-only (get-user-premium-rate (user principal))
+    (default-to BASE-PREMIUM-RATE (map-get? risk-multipliers user)))
+
+
+(define-constant REWARD-CYCLE-LENGTH u144)
+(define-constant REWARD-RATE u50)
+
+(define-map staking-positions
+    principal
+    { amount: uint, start-block: uint, last-claim: uint }
+)
+
+(define-map accumulated-rewards
+    principal
+    uint
+)
+
+(define-public (stake-tokens (amount uint))
+    (let (
+        (current-position (default-to { amount: u0, start-block: u0, last-claim: u0 }
+            (map-get? staking-positions tx-sender)))
+    )
+    (begin
+        (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+        (map-set staking-positions tx-sender
+            {
+                amount: (+ amount (get amount current-position)),
+                start-block: stacks-block-height,
+                last-claim: stacks-block-height
+            })
+        (ok true))))
+
+(define-public (claim-staking-rewards)
+    (let (
+        (position (unwrap! (map-get? staking-positions tx-sender) ERR-NOT-AUTHORIZED))
+        (cycles-passed (/ (- stacks-block-height (get last-claim position)) REWARD-CYCLE-LENGTH))
+        (reward-amount (* (get amount position) (* cycles-passed REWARD-RATE)))
+    )
+    (begin
+        (try! (as-contract (stx-transfer? reward-amount tx-sender tx-sender)))
+        (map-set staking-positions tx-sender
+            (merge position { last-claim: stacks-block-height }))
+        (map-set accumulated-rewards tx-sender 
+            (+ (default-to u0 (map-get? accumulated-rewards tx-sender)) reward-amount))
+        (ok reward-amount))))
