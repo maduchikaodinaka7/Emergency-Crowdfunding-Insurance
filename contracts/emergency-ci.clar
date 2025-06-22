@@ -666,3 +666,156 @@
         (map-set accumulated-rewards tx-sender 
             (+ (default-to u0 (map-get? accumulated-rewards tx-sender)) reward-amount))
         (ok reward-amount))))
+      
+
+(define-constant EMERGENCY-THRESHOLD u3)
+(define-constant EMERGENCY-ACTIVE u1)
+(define-constant EMERGENCY-RESOLVED u2)
+(define-constant MAX-EMERGENCY-AMOUNT u50000000)
+
+(define-map emergency-validators principal bool)
+(define-map emergency-triggers 
+  { emergency-id: uint }
+  {
+    trigger-type: (string-ascii 20),
+    location: (string-ascii 50),
+    severity: uint,
+    confirmations: uint,
+    status: uint,
+    created-at: uint,
+    auto-release-amount: uint
+  }
+)
+(define-map emergency-confirmations
+  { emergency-id: uint, validator: principal }
+  bool
+)
+(define-map emergency-beneficiaries
+  { emergency-id: uint }
+  (list 10 principal)
+)
+(define-map beneficiary-allocations
+  { emergency-id: uint, beneficiary: principal }
+  uint
+)
+(define-data-var emergency-id-nonce uint u0)
+(define-data-var total-emergency-fund uint u0)
+
+(define-public (add-emergency-validator (validator principal))
+  (begin
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+    (map-set emergency-validators validator true)
+    (ok true)))
+
+(define-public (remove-emergency-validator (validator principal))
+  (begin
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+    (map-delete emergency-validators validator)
+    (ok true)))
+
+(define-public (allocate-emergency-fund (amount uint))
+  (begin
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+    (asserts! (>= (var-get total-pool) amount) ERR-INSUFFICIENT-FUNDS)
+    (var-set total-emergency-fund (+ (var-get total-emergency-fund) amount))
+    (var-set total-pool (- (var-get total-pool) amount))
+    (ok true)))
+
+(define-public (trigger-emergency 
+    (trigger-type (string-ascii 20))
+    (location (string-ascii 50))
+    (severity uint)
+    (auto-release-amount uint)
+    (beneficiaries (list 10 principal)))
+  (let ((emergency-id (var-get emergency-id-nonce)))
+    (begin
+      (asserts! (default-to false (map-get? emergency-validators tx-sender)) ERR-NOT-AUTHORIZED)
+      (asserts! (<= auto-release-amount MAX-EMERGENCY-AMOUNT) ERR-INSUFFICIENT-FUNDS)
+      (asserts! (<= auto-release-amount (var-get total-emergency-fund)) ERR-INSUFFICIENT-FUNDS)
+      (map-set emergency-triggers
+        { emergency-id: emergency-id }
+        {
+          trigger-type: trigger-type,
+          location: location,
+          severity: severity,
+          confirmations: u1,
+          status: EMERGENCY-ACTIVE,
+          created-at: stacks-block-height,
+          auto-release-amount: auto-release-amount
+        })
+      (map-set emergency-confirmations
+        { emergency-id: emergency-id, validator: tx-sender }
+        true)
+      (map-set emergency-beneficiaries
+        { emergency-id: emergency-id }
+        beneficiaries)
+      (var-set emergency-id-nonce (+ emergency-id u1))
+      (try! (check-auto-release emergency-id))
+      (ok emergency-id))))
+
+(define-public (confirm-emergency (emergency-id uint))
+  (let ((emergency (unwrap! (map-get? emergency-triggers { emergency-id: emergency-id }) (err u300)))
+        (already-confirmed (default-to false (map-get? emergency-confirmations { emergency-id: emergency-id, validator: tx-sender }))))
+    (begin
+      (asserts! (default-to false (map-get? emergency-validators tx-sender)) ERR-NOT-AUTHORIZED)
+      (asserts! (is-eq (get status emergency) EMERGENCY-ACTIVE) (err u301))
+      (asserts! (not already-confirmed) (err u302))
+      (map-set emergency-confirmations
+        { emergency-id: emergency-id, validator: tx-sender }
+        true)
+      (map-set emergency-triggers
+        { emergency-id: emergency-id }
+        (merge emergency { confirmations: (+ (get confirmations emergency) u1) }))
+      (try! (check-auto-release emergency-id))
+      (ok true))))
+
+(define-private (check-auto-release (emergency-id uint))
+  (let ((emergency (unwrap! (map-get? emergency-triggers { emergency-id: emergency-id }) (err u300)))
+        (beneficiaries (unwrap! (map-get? emergency-beneficiaries { emergency-id: emergency-id }) (err u303))))
+    (begin
+      (if (>= (get confirmations emergency) EMERGENCY-THRESHOLD)
+        (begin
+          (unwrap! (distribute-emergency-funds emergency-id beneficiaries (get auto-release-amount emergency)) (err u304))
+          (map-set emergency-triggers
+            { emergency-id: emergency-id }
+            (merge emergency { status: EMERGENCY-RESOLVED }))
+          (ok true))
+        (ok false)))))
+
+(define-private (distribute-emergency-funds (emergency-id uint) (beneficiaries (list 10 principal)) (total-amount uint))
+  (let ((amount-per-beneficiary (/ total-amount (len beneficiaries))))
+    (begin
+      (var-set total-emergency-fund (- (var-get total-emergency-fund) total-amount))
+      (fold distribute-to-beneficiary beneficiaries { emergency-id: emergency-id, amount: amount-per-beneficiary, success: true })
+      (ok true))))
+
+(define-private (distribute-to-beneficiary 
+    (beneficiary principal) 
+    (context { emergency-id: uint, amount: uint, success: bool }))
+  (if (get success context)
+    (match (as-contract (stx-transfer? (get amount context) tx-sender beneficiary))
+      success (begin
+        (map-set beneficiary-allocations
+          { emergency-id: (get emergency-id context), beneficiary: beneficiary }
+          (get amount context))
+        context)
+      error (merge context { success: false }))
+    context))
+
+(define-read-only (get-emergency-details (emergency-id uint))
+  (map-get? emergency-triggers { emergency-id: emergency-id }))
+
+(define-read-only (get-emergency-beneficiaries (emergency-id uint))
+  (map-get? emergency-beneficiaries { emergency-id: emergency-id }))
+
+(define-read-only (get-beneficiary-allocation (emergency-id uint) (beneficiary principal))
+  (default-to u0 (map-get? beneficiary-allocations { emergency-id: emergency-id, beneficiary: beneficiary })))
+
+(define-read-only (is-emergency-validator (validator principal))
+  (default-to false (map-get? emergency-validators validator)))
+
+(define-read-only (get-emergency-fund-balance)
+  (var-get total-emergency-fund))
+
+(define-read-only (has-confirmed-emergency (emergency-id uint) (validator principal))
+  (default-to false (map-get? emergency-confirmations { emergency-id: emergency-id, validator: validator })))
