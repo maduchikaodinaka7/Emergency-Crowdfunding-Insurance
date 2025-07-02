@@ -54,9 +54,4 @@ plan:
             emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
             path: "contracts\\emergency-ci.clar"
             clarity-version: 3
-        - emulated-contract-publish:
-            contract-name: security-audit
-            emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
-            path: "contracts\\security-audit.clar"
-            clarity-version: 3
       epoch: "3.1"
