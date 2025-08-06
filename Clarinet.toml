@@ -9,6 +9,16 @@ requirements = []
 path = 'contracts/emergency-ci.clar'
 clarity_version = 3
 epoch = 3.1
+
+[contracts.security-audit]
+path = 'contracts/security-audit.clar'
+clarity_version = 3
+epoch = 3.1
+
+[contracts.dynamic-coverage]
+path = 'contracts/dynamic-coverage.clar'
+clarity_version = 3
+epoch = 3.1
 [repl.analysis]
 passes = ['check_checker']
 
